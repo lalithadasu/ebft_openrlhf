@@ -205,6 +205,7 @@ def run(cli_args):
         enable_ema              = pop_flag("enable_ema")
         document_masking        = pop_flag("document_masking")
         qa_masking              = pop_flag("qa_masking")
+        occupancy_reward_mode   = pop_flag("occupancy_reward_mode")
 
         # Ray job submission command
         launch_args = [
@@ -245,6 +246,8 @@ def run(cli_args):
             launch_args.append("--document_masking")
         if qa_masking:
             launch_args.append("--qa_masking")
+        if occupancy_reward_mode:
+            launch_args.append("--occupancy_reward_mode")
 
         for k, v in overrides.items():
             launch_args.append(f"--{k}={v}")

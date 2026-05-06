@@ -43,8 +43,8 @@ prompt_max_len: 1024
 # ==========================================
 # Logging and Checkpointing
 # ==========================================
-wandb_project: <INSERT>
-use_wandb: <INSERT>
+wandb_project: ebft_qa_occupancy
+use_wandb: false
 save_steps: -1
 logging_steps: 1
 save_log_scale_count: 10
@@ -138,8 +138,8 @@ sweep:
   # Set 1: 2 epoch EBFT from base, sweeping over CE loss and diversity reward coefficients, with and without whitening
   - actor_learning_rate: [1e-6]
     use_whitening: [true, false]
-    pretrain: ["Qwen/Qwen2.5-1.5B"] 
-    critic_pretrain: ["Qwen/Qwen2.5-1.5B"] 
+    pretrain: ["Qwen/Qwen2.5-1.5B"]
+    critic_pretrain: ["Qwen/Qwen2.5-1.5B"]
     ce_loss_coef: [0.0, 0.03, 0.1]
     rl_loss_coef: [1.0]
     diversity_rew_coef: [0.0, 0.5, 1.0]
@@ -147,9 +147,26 @@ sweep:
   # Set 2: 1 epoch EBFT from warmstart, sweeping over CE loss and diversity reward coefficients
   - actor_learning_rate: [1e-6]
     use_whitening: [true]
-    pretrain: ["sjelassi/qwen_25_1_5b_omi_code_100k_200tok"] 
+    pretrain: ["sjelassi/qwen_25_1_5b_omi_code_100k_200tok"]
     critic_pretrain: ["Qwen/Qwen2.5-1.5B"]
     ce_loss_coef: [0.0, 0.03, 0.1]
     rl_loss_coef: [1.0]
     diversity_rew_coef: [0.0, 0.5, 1.0]
     num_episodes: [1]
+  # Set 3: Occupancy-distance reward (simpo_on_policy_occupancy method in EBFT infrastructure)
+  # Replaces cosine alignment-diversity with mmd_rbf/energy/l_alpha kernel distances.
+  # Per-sample decomposition preserves RLOO compatibility.
+  - actor_learning_rate: [1e-6]
+    use_whitening: [true]
+    pretrain: ["Qwen/Qwen2.5-1.5B"]
+    critic_pretrain: ["Qwen/Qwen2.5-1.5B"]
+    ce_loss_coef: [0.0, 0.03]
+    rl_loss_coef: [1.0]
+    num_episodes: [2]
+    occupancy_reward_mode: [true]
+    occupancy_distance: ["mmd_rbf", "energy", "l_alpha"]
+    occupancy_alpha: [2.0]
+    occupancy_rbf_sigma_strategy: ["median"]
+    # alignment_rew_coef / diversity_rew_coef unused when occupancy_reward_mode=true
+    alignment_rew_coef: [1.0]
+    diversity_rew_coef: [0.0]

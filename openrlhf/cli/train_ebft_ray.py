@@ -392,6 +392,22 @@ if __name__ == "__main__":
     parser.add_argument("--alignment_rew_coef", type=float, default=1.0, help="Weight for embedding alignment reward")
     parser.add_argument("--diversity_rew_coef", type=float, default=1.0, help="Weight for diversity reward")
 
+    # Occupancy-distance reward mode (replaces cosine alignment/diversity with kernel distance)
+    parser.add_argument("--occupancy_reward_mode", action="store_true", default=False,
+                        help="Use occupancy-distance reward (mmd_rbf/energy/l_alpha) instead of cosine alignment-diversity")
+    parser.add_argument("--occupancy_distance", type=str, default="mmd_rbf",
+                        choices=["mmd_rbf", "energy", "l_alpha"],
+                        help="Distance metric for occupancy reward: mmd_rbf | energy | l_alpha")
+    parser.add_argument("--occupancy_alpha", type=float, default=2.0,
+                        help="Exponent for l_alpha distance (ignored for mmd_rbf and energy)")
+    parser.add_argument("--occupancy_rbf_sigma_strategy", type=str, default="median",
+                        choices=["median", "fixed"],
+                        help="How to set RBF kernel bandwidth: median heuristic or fixed value")
+    parser.add_argument("--occupancy_rbf_sigma", type=float, default=1.0,
+                        help="Fixed RBF sigma when occupancy_rbf_sigma_strategy=fixed")
+    parser.add_argument("--occupancy_rbf_median_sample_size", type=int, default=500,
+                        help="Max number of embedding vectors to subsample for median sigma estimation")
+
     # -----------------------------------------------------------------------
     # Critic losses and architecture
     # -----------------------------------------------------------------------

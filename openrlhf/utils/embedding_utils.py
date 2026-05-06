@@ -241,6 +241,103 @@ def get_alignment_rewards(gen_embedding, gt_embedding):
 
 
 @torch.no_grad()
+def get_occupancy_rewards(
+    gen_embedding: torch.Tensor,
+    gt_embedding: torch.Tensor,
+    distance: str = "mmd_rbf",
+    alpha: float = 2.0,
+    rbf_sigma_strategy: str = "median",
+    rbf_sigma: float = 1.0,
+    rbf_median_sample_size: int = 500,
+) -> tuple:
+    """Per-sample occupancy-distance rewards compatible with RLOO.
+
+    Inputs (both): (MB, NG, NS, NB, D) where
+        MB = micro-batches, NG = groups (prompts), NS = samples per prompt,
+        NB = blocks, D = feature dim.
+
+    gt_embedding has the same reference repeated NS times per group
+    (identical prompt features), so gt_ref = gt_embedding[:, :, 0, :, :].
+
+    Returns (rewards, alignment_part, diversity_part) each (MB, NG, NS, NB).
+    The decomposition mirrors EBFT's structure with a different kernel:
+      - mmd_rbf:  r_j = +2·K_rbf(gen_j, gt_ref)  −  2/(NS−1)·Σ_{j'≠j} K_rbf(gen_j, gen_{j'})
+      - energy:   r_j = −2·||gen_j − gt_ref||      +  1/(NS−1)·Σ_{j'≠j} ||gen_j − gen_{j'}||
+      - l_alpha:  r_j = −||gen_j − gt_ref||_α^α    (no diversity term; gt_ref alignment only)
+    """
+    # gt reference is the same for all NS samples in a group
+    gt_ref = gt_embedding[:, :, 0, :, :]            # (MB, NG, NB, D)
+    gt_ref_exp = gt_ref.unsqueeze(2)                 # (MB, NG, 1, NB, D)
+    NS = gen_embedding.shape[2]
+
+    if distance == "l_alpha":
+        diff = gen_embedding - gt_ref_exp            # (MB, NG, NS, NB, D)
+        alignment = -(diff.abs().pow(alpha).sum(dim=-1))  # (MB, NG, NS, NB)
+        diversity = torch.zeros_like(alignment)
+        rewards = alignment
+        return rewards, alignment, diversity
+
+    # Compute per-sample pairwise self-distances for mmd_rbf and energy.
+    # gen_i vs gen_j: unsqueeze on different dims, broadcast over NS×NS.
+    gen_i = gen_embedding.unsqueeze(3)               # (MB, NG, NS, 1, NB, D)
+    gen_j = gen_embedding.unsqueeze(2)               # (MB, NG, 1, NS, NB, D)
+    self_sqdist = (gen_i - gen_j).pow(2).sum(dim=-1) # (MB, NG, NS, NS, NB)
+
+    cross_sqdist = (gen_embedding - gt_ref_exp).pow(2).sum(dim=-1)  # (MB, NG, NS, NB)
+
+    # Diagonal mask (sample with itself)
+    eye = torch.eye(NS, device=gen_embedding.device, dtype=torch.bool)
+    eye_mask = eye.view(1, 1, NS, NS, 1)
+
+    if distance == "mmd_rbf":
+        if rbf_sigma_strategy == "median":
+            combined = torch.cat(
+                [gen_embedding.reshape(-1, gen_embedding.shape[-1]),
+                 gt_ref.reshape(-1, gt_ref.shape[-1])],
+                dim=0,
+            ).float()
+            n = combined.shape[0]
+            if n >= 2:
+                sample_size = min(n, rbf_median_sample_size)
+                if sample_size < n:
+                    perm = torch.randperm(n, device=combined.device)[:sample_size]
+                    combined = combined[perm]
+                sigma_val = torch.pdist(combined, p=2).clamp_min(1e-6).median().clamp_min(1e-6)
+            else:
+                sigma_val = combined.new_tensor(max(rbf_sigma, 1e-6))
+        else:
+            sigma_val = gen_embedding.new_tensor(max(rbf_sigma, 1e-6))
+
+        denom = 2.0 * sigma_val.pow(2)
+        cross_k = torch.exp(-cross_sqdist / denom)                  # (MB, NG, NS, NB)
+        self_k = torch.exp(-self_sqdist / denom)                     # (MB, NG, NS, NS, NB)
+        self_k = self_k.masked_fill(eye_mask, 0.0)
+        if NS > 1:
+            self_k_mean = self_k.sum(dim=3) / (NS - 1)              # (MB, NG, NS, NB)
+        else:
+            self_k_mean = torch.zeros_like(cross_k)
+        alignment = 2.0 * cross_k
+        diversity = 2.0 * self_k_mean
+        rewards = alignment - diversity
+        return rewards, alignment, diversity
+
+    if distance == "energy":
+        cross_dist = cross_sqdist.clamp_min(0.0).sqrt()             # (MB, NG, NS, NB)
+        self_dist = self_sqdist.clamp_min(0.0).sqrt()               # (MB, NG, NS, NS, NB)
+        self_dist = self_dist.masked_fill(eye_mask, 0.0)
+        if NS > 1:
+            self_dist_mean = self_dist.sum(dim=3) / (NS - 1)        # (MB, NG, NS, NB)
+        else:
+            self_dist_mean = torch.zeros_like(cross_dist)
+        alignment = -2.0 * cross_dist
+        diversity = -self_dist_mean  # subtracted from reward → promotes diversity
+        rewards = alignment + self_dist_mean
+        return rewards, alignment, self_dist_mean
+
+    raise ValueError(f"Unknown occupancy distance '{distance}'. Choose from: l_alpha, mmd_rbf, energy.")
+
+
+@torch.no_grad()
 def get_diversity_rewards(gen_embedding, per_token=False):
     if gen_embedding.shape[2] > 1:
         if per_token:

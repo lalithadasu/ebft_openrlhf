@@ -14,7 +14,8 @@ from openrlhf.utils.embedding_utils import (
     prepare_tensors_for_embedding,
     whiten_embeddings_batched,
     get_alignment_rewards,
-    get_diversity_rewards
+    get_diversity_rewards,
+    get_occupancy_rewards,
 )
 from openrlhf.trainer.ray.launcher import RayActorGroup
 from openrlhf.utils.logging_utils import init_logger
@@ -783,30 +784,47 @@ class RemoteExperienceMaker(ABC):
             per_token = True
         else:
             per_token = False
-        # ed or cosine
-        gt_rewards_tensor = get_alignment_rewards(gen_embedding, gt_embedding)
-        diversity_rewards_tensor = get_diversity_rewards(gen_embedding, per_token)
-        if per_token:
-            # token-level rewards
-            gt_rewards_tensor = gt_rewards_tensor.reshape(gt_rewards_tensor.shape[0], -1, gt_rewards_tensor.shape[-2], gt_rewards_tensor.shape[-1])
-            diversity_rewards_tensor = diversity_rewards_tensor.reshape(diversity_rewards_tensor.shape[0], -1, diversity_rewards_tensor.shape[-2], diversity_rewards_tensor.shape[-1])
-        else:
+
+        occupancy_reward_mode = getattr(self.args, "occupancy_reward_mode", False)
+
+        if occupancy_reward_mode:
+            # Occupancy-distance reward (mmd_rbf / energy / l_alpha).
+            # Returns per-sample rewards compatible with RLOO via per-sample kernel decomposition.
+            # gen_embedding / gt_embedding: (MB, NG, NS, NB, D) — token mode not supported here.
+            rewards_tensor, gt_rewards_tensor, diversity_rewards_tensor = get_occupancy_rewards(
+                gen_embedding,
+                gt_embedding,
+                distance=getattr(self.args, "occupancy_distance", "mmd_rbf"),
+                alpha=getattr(self.args, "occupancy_alpha", 2.0),
+                rbf_sigma_strategy=getattr(self.args, "occupancy_rbf_sigma_strategy", "median"),
+                rbf_sigma=getattr(self.args, "occupancy_rbf_sigma", 1.0),
+                rbf_median_sample_size=getattr(self.args, "occupancy_rbf_median_sample_size", 500),
+            )
+            # Flatten NS into batch dim: (MB, NG*NS, NB)
+            rewards_tensor = rewards_tensor.reshape(rewards_tensor.shape[0], -1, rewards_tensor.shape[-1])
             gt_rewards_tensor = gt_rewards_tensor.reshape(gt_rewards_tensor.shape[0], -1, gt_rewards_tensor.shape[-1])
             diversity_rewards_tensor = diversity_rewards_tensor.reshape(diversity_rewards_tensor.shape[0], -1, diversity_rewards_tensor.shape[-1])
-        # NOTE: We keep the *raw* component tensors (gt/diversity/critic) for logging,
-        # and apply scalar coefficients only when forming the final reward used for advantages.
-        gt_rewards_tensor *= 2
-        diversity_rewards_tensor *= 2
+        else:
+            # Original EBFT cosine alignment − diversity reward.
+            gt_rewards_tensor = get_alignment_rewards(gen_embedding, gt_embedding)
+            diversity_rewards_tensor = get_diversity_rewards(gen_embedding, per_token)
+            if per_token:
+                gt_rewards_tensor = gt_rewards_tensor.reshape(gt_rewards_tensor.shape[0], -1, gt_rewards_tensor.shape[-2], gt_rewards_tensor.shape[-1])
+                diversity_rewards_tensor = diversity_rewards_tensor.reshape(diversity_rewards_tensor.shape[0], -1, diversity_rewards_tensor.shape[-2], diversity_rewards_tensor.shape[-1])
+            else:
+                gt_rewards_tensor = gt_rewards_tensor.reshape(gt_rewards_tensor.shape[0], -1, gt_rewards_tensor.shape[-1])
+                diversity_rewards_tensor = diversity_rewards_tensor.reshape(diversity_rewards_tensor.shape[0], -1, diversity_rewards_tensor.shape[-1])
+            # NOTE: We keep the *raw* component tensors (gt/diversity/critic) for logging,
+            # and apply scalar coefficients only when forming the final reward used for advantages.
+            gt_rewards_tensor *= 2
+            diversity_rewards_tensor *= 2
+            rewards_tensor = self.args.alignment_rew_coef * gt_rewards_tensor - self.args.diversity_rew_coef * diversity_rewards_tensor
 
         if getattr(self.args, "debug", False):
             logger.info(
                 f'gt_rewards_tensor shape: {gt_rewards_tensor.shape}, '
                 f'diversity_rewards_tensor shape: {diversity_rewards_tensor.shape}'
             )
-        # Final reward used for advantages (coherent with config knobs):
-        #   reward = alignment_rew_coef * alignment
-        #          - diversity_rew_coef      * diversity
-        rewards_tensor = self.args.alignment_rew_coef * gt_rewards_tensor - self.args.diversity_rew_coef * diversity_rewards_tensor
         
         # Batch call initial model
         if self.initial_model_group is not None:
