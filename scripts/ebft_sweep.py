@@ -208,9 +208,14 @@ def run(cli_args):
         occupancy_reward_mode   = pop_flag("occupancy_reward_mode")
 
         # Ray job submission command
+        repo_dir = os.getcwd()  # script is always invoked from repo root
+        runtime_env = (
+            f'{{"working_dir":"./openrlhf_work_dir",'
+            f'"env_vars":{{"PYTHONPATH":"{repo_dir}"}}}}'
+        )
         launch_args = [
             f"ray job submit --address='http://127.0.0.1:{dashboard_port}'",
-            '--runtime-env-json=\'{\"working_dir\":\"./openrlhf_work_dir\"}\'',
+            f"--runtime-env-json='{runtime_env}'",
             '-- python3 -m openrlhf.cli.train_ebft_ray',
             "--bf16",
             "--gradient_checkpointing",
@@ -258,7 +263,7 @@ def run(cli_args):
             logger.info(f"Launch command: {' '.join(launch_args)}")
 
         # Maximum retries for Ray connection
-        max_retries = 3
+        max_retries = 5
         retry_delay = 30  # seconds
         
         for attempt in range(max_retries):

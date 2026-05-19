@@ -37,6 +37,9 @@ pip install vllm==0.8.4
 echo "==> Installing Flash Attention 2.7.4"
 pip install "flash-attn==2.7.4post1" --no-build-isolation
 
+echo "==> Installing Ray with dashboard support"
+pip install "ray[default]"
+
 echo "==> Installing auxiliary dependencies"
 pip install \
     psutil \
